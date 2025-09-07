@@ -1,0 +1,261 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Forest Fires Analytics</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.1/dist/chart.umd.min.js"></script>
+  <style>
+    :root { --bg:#0f172a; --card:#111827; --muted:#94a3b8; --text:#e5e7eb; --accent:#22d3ee; --accent2:#a78bfa; }
+    * { box-sizing:border-box; }
+    body { font-family: 'Inter', system-ui, Arial, sans-serif; margin:0; background:linear-gradient(180deg,#0b1020 0%, #0f172a 100%); color:var(--text); }
+    header { padding:20px 24px; border-bottom:1px solid #1f2937; position:sticky; top:0; background:rgba(15,23,42,0.85); backdrop-filter: blur(6px); }
+    header h1 { margin:0; font-size:20px; letter-spacing:0.3px; }
+    .container { max-width:1100px; margin:0 auto; padding:24px; }
+    .grid { display:grid; grid-template-columns: 1fr; gap:16px; }
+    @media(min-width:900px){ .grid{ grid-template-columns: 1.2fr 1fr; } }
+    .card { background:linear-gradient(180deg,#0b1020 0%, #0b1326 100%); border:1px solid #1f2937; border-radius:12px; padding:16px; }
+    .card h2 { margin:0 0 10px 0; font-size:16px; }
+    label { font-size:12px; color:var(--muted); display:block; margin-bottom:4px; }
+    input, button, textarea { font: inherit; }
+    .row { display:flex; gap:8px; flex-wrap:wrap; align-items:end; }
+    .field { display:flex; flex-direction:column; min-width:140px; }
+    /* Force identical styling for all inputs (text/number) */
+    input { background:#0b1224 !important; color:var(--text); border:1px solid #1f2937; border-radius:8px; padding:10px 12px; outline:none; -webkit-appearance:none; -moz-appearance:none; appearance:none; }
+    input::placeholder { color: var(--muted); opacity: 1; }
+    /* Force autofill fields to keep dark background */
+    input:-webkit-autofill,
+    input:-webkit-autofill:hover,
+    input:-webkit-autofill:focus {
+      -webkit-box-shadow: 0 0 0px 1000px #0b1224 inset;
+      -webkit-text-fill-color: var(--text);
+      caret-color: var(--text);
+      transition: background-color 5000s ease-in-out 0s;
+    }
+    input:focus { border-color:#324065; }
+    button { background:linear-gradient(90deg,var(--accent), var(--accent2)); color:#0b1020; border:none; border-radius:10px; padding:10px 14px; cursor:pointer; font-weight:700; letter-spacing:0.2px; }
+    button.secondary{ background:#111827; color:var(--text); border:1px solid #22304e; }
+    .tabs { display:flex; gap:8px; margin-bottom:12px; flex-wrap:wrap; }
+    .tab { padding:8px 12px; border:1px solid #22304e; border-radius:999px; cursor:pointer; color:var(--muted); }
+    .tab.active { color:#0b1020; background:linear-gradient(90deg,var(--accent), var(--accent2)); border-color:transparent; font-weight:700; }
+    .section { display:none; }
+    .section.active { display:block; }
+    table { width:100%; border-collapse: collapse; }
+    th, td { text-align:left; padding:10px; border-bottom:1px solid #1f2937; }
+    th { color:var(--muted); font-weight:600; }
+    .toast { position:fixed; right:16px; bottom:16px; background:#0b1224; border:1px solid #1f2937; padding:12px 14px; border-radius:12px; display:none; }
+    .popup { position:fixed; inset:0; display:none; align-items:center; justify-content:center; backdrop-filter:blur(2px); }
+    .popup .box { background:#0b1224; border:1px solid #1f2937; padding:18px 22px; border-radius:12px; font-weight:700; }
+    .muted { color:var(--muted); }
+  </style>
+  <script>
+    let charts = {};
+    function showTab(id){
+      document.querySelectorAll('.tab').forEach(t => t.classList.toggle('active', t.dataset.to===id));
+      document.querySelectorAll('.section').forEach(s => s.classList.toggle('active', s.id===id));
+    }
+    function toast(msg){ const t=document.getElementById('toast'); t.textContent=msg; t.style.display='block'; setTimeout(()=>t.style.display='none', 2200); }
+    function popup(msg){ const p=document.getElementById('popup'); const b=document.getElementById('popupText'); b.textContent=msg; p.style.display='flex'; setTimeout(()=>{p.style.display='none';}, 1400); }
+    async function get(p){ const r = await fetch(p); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+    async function post(p, body){ const r = await fetch(p,{method:'POST', headers:{'Content-Type':'application/json'}, body:JSON.stringify(body)}); if(!r.ok) throw new Error(await r.text()); return r.json(); }
+
+    async function doUpsert(){
+      const state = document.getElementById('stateI').value.trim();
+      const year = Number(document.getElementById('yearI').value);
+      const count = Number(document.getElementById('countI').value);
+      if(!state || !year || year<1900){ toast('Enter valid state and year'); return; }
+      await post('/api/upsert',{state,year,count});
+      // reset fields
+      document.getElementById('stateI').value='';
+      document.getElementById('yearI').value='';
+      document.getElementById('countI').value='';
+      toast('Saved ✔');
+      popup('Saved');
+    }
+
+    function renderChart(ctxId, type, data, options){
+      const ctx = document.getElementById(ctxId);
+      if(charts[ctxId]) charts[ctxId].destroy();
+      charts[ctxId] = new Chart(ctx, { type, data, options });
+    }
+
+    async function loadTop5(){
+      const y = Number(document.getElementById('yearTop').value);
+      if(!y){ toast('Enter year'); return; }
+      const rows = await get('/api/top5?year='+y);
+      const labels = rows.map(r=>r.state);
+      const values = rows.map(r=>r.count);
+      renderChart('top5Chart','bar',{ labels, datasets:[{ label:'Top 5 - '+y, data:values, backgroundColor:'#22d3ee55', borderColor:'#22d3ee' }] },{ scales:{ y:{ beginAtZero:true }}});
+      document.getElementById('top5Table').innerHTML = rows.map(r=>`<tr><td>${r.state}</td><td>${r.count}</td></tr>`).join('');
+    }
+
+    async function loadYoY(){
+      const s = document.getElementById('stateYoY').value.trim(); if(!s){ toast('Enter state'); return; }
+      const rows = await get('/api/yoy?state='+encodeURIComponent(s));
+      const labels = rows.map(r=>r.year);
+      const values = rows.map(r=>r.count);
+      const yoy = rows.map(r=> r.yoy===null?0:r.yoy);
+      renderChart('yoyChart','line',{ labels, datasets:[
+        { label:s+' count', data:values, borderColor:'#a78bfa', backgroundColor:'#a78bfa33' },
+        { label:'YoY Δ', data:yoy, borderColor:'#22d3ee', backgroundColor:'#22d3ee33', yAxisID:'y1' }
+      ]},{ scales:{ y:{ beginAtZero:true }, y1:{ beginAtZero:true, position:'right', grid:{ drawOnChartArea:false }}} });
+      document.getElementById('yoyTable').innerHTML = rows.map(r=>`<tr><td>${r.year}</td><td>${r.count}</td><td>${r.yoy??''}</td></tr>`).join('');
+    }
+
+    async function loadCompare(){
+      const raw = document.getElementById('statesCmp').value.trim(); if(!raw){ toast('Enter states'); return; }
+      const states = raw.split(',').map(s=>s.trim()).filter(Boolean);
+      const map = await get('/api/compare?states='+encodeURIComponent(states.join(',')));
+      const allYears = Array.from(new Set(Object.values(map).flat().map(r=>r.year))).sort((a,b)=>a-b);
+      const datasets = states.map((s,idx)=>{
+        const color = ['#22d3ee','#a78bfa','#34d399','#f59e0b','#ef4444','#60a5fa'][idx%6];
+        const series = (map[s]||[]);
+        const byYear = Object.fromEntries(series.map(r=>[r.year,r.count]));
+        return { label:s, data: allYears.map(y=> byYear[y] ?? 0), borderColor: color, backgroundColor: color+'33' };
+      });
+      renderChart('cmpChart','line',{ labels: allYears, datasets },{ scales:{ y:{ beginAtZero:true }}});
+      // table
+      const tbody = document.getElementById('cmpTable');
+      tbody.innerHTML = '';
+      allYears.forEach((y,i)=>{
+        const tds = datasets.map(ds=>`<td>${ds.data[i]}</td>`).join('');
+        tbody.insertAdjacentHTML('beforeend', `<tr><td>${y}</td>${tds}</tr>`);
+      });
+      document.getElementById('cmpHead').innerHTML = `<th>Year</th>${states.map(s=>`<th>${s}</th>`).join('')}`;
+    }
+
+    async function loadSummary(){
+      const y = Number(document.getElementById('yearSum').value); if(!y){ toast('Enter year'); return; }
+      const rows = await get('/api/summary?year='+y);
+      const tbody = document.getElementById('sumTable');
+      tbody.innerHTML = rows.map(r=>`<tr><td>${r.state}</td><td>${r.count}</td></tr>`).join('');
+    }
+    async function loadZeros(){
+      const rows = await get('/api/zeros');
+      document.getElementById('zeroList').innerHTML = rows.map(s=>`<li>${s}</li>`).join('');
+    }
+    async function loadVulnerable(){
+      const row = await get('/api/vulnerable');
+      document.getElementById('vulnerableBox').textContent = row ? `${row.state} (total: ${row.total})` : 'No data';
+    }
+
+    window.addEventListener('DOMContentLoaded', ()=>{
+      showTab('t-top5');
+      const thisYear = new Date().getFullYear();
+      document.getElementById('yearTop').value = thisYear;
+      document.getElementById('yearSum').value = thisYear;
+    });
+  </script>
+  </head>
+<body>
+  <header>
+    <div class="container"><h1>🌲 Forest Fires Analytics</h1></div>
+  </header>
+  <div class="container">
+
+    <div class="card" style="margin-bottom:16px;">
+      <h2>Quick Update</h2>
+      <div class="row">
+        <div class="field"><label>State</label><input id="stateI" placeholder="e.g., Karnataka" autocomplete="off" /></div>
+        <div class="field"><label>Year</label><input id="yearI" type="number" placeholder="e.g., 2010" autocomplete="off" /></div>
+        <div class="field"><label>Count</label><input id="countI" type="number" placeholder="e.g., 123" autocomplete="off" /></div>
+        <button onclick="doUpsert()">Save</button>
+      </div>
+      <div class="muted">Adds or updates a single state-year record.</div>
+    </div>
+
+    <div class="tabs">
+      <div class="tab active" data-to="t-top5" onclick="showTab('t-top5')">Top 5</div>
+      <div class="tab" data-to="t-yoy" onclick="showTab('t-yoy')">YoY</div>
+      <div class="tab" data-to="t-compare" onclick="showTab('t-compare')">Compare</div>
+      <div class="tab" data-to="t-summary" onclick="showTab('t-summary')">Summary</div>
+      <div class="tab" data-to="t-others" onclick="showTab('t-others')">Other Reports</div>
+    </div>
+
+    <div id="t-top5" class="section active">
+      <div class="card">
+        <h2>Top 5 states by year</h2>
+        <div class="row">
+          <div class="field"><label>Year</label><input id="yearTop" type="number" /></div>
+          <button onclick="loadTop5()">Fetch</button>
+        </div>
+        <canvas id="top5Chart" height="120"></canvas>
+        <table style="margin-top:12px;">
+          <thead><tr><th>State</th><th>Count</th></tr></thead>
+          <tbody id="top5Table"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="t-yoy" class="section">
+      <div class="card">
+        <h2>Year-over-Year - single state</h2>
+        <div class="row">
+          <div class="field"><label>State</label><input id="stateYoY" placeholder="e.g., Mizoram" /></div>
+          <button onclick="loadYoY()">Fetch</button>
+        </div>
+        <canvas id="yoyChart" height="120"></canvas>
+        <table style="margin-top:12px;">
+          <thead><tr><th>Year</th><th>Count</th><th>YoY Δ</th></tr></thead>
+          <tbody id="yoyTable"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <div id="t-compare" class="section">
+      <div class="card">
+        <h2>Compare multiple states</h2>
+        <div class="row">
+          <div class="field" style="flex:1 1 400px;"><label>States (comma separated)</label><input id="statesCmp" placeholder="e.g., Karnataka, Kerala, Tamil Nadu" /></div>
+          <button onclick="loadCompare()">Fetch</button>
+        </div>
+        <canvas id="cmpChart" height="120"></canvas>
+        <div style="overflow:auto; max-height:260px; margin-top:8px;">
+          <table>
+            <thead><tr id="cmpHead"><th>Year</th></tr></thead>
+            <tbody id="cmpTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="t-summary" class="section">
+      <div class="card">
+        <h2>Summary table</h2>
+        <div class="row">
+          <div class="field"><label>Year</label><input id="yearSum" type="number" /></div>
+          <button onclick="loadSummary()">Fetch</button>
+        </div>
+        <div style="overflow:auto; max-height:320px; margin-top:8px;">
+          <table>
+            <thead><tr><th>State</th><th>Count</th></tr></thead>
+            <tbody id="sumTable"></tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+    <div id="t-others" class="section">
+      <div class="grid">
+        <div class="card">
+          <h2>States with 0 fires</h2>
+          <button class="secondary" onclick="loadZeros()">Refresh</button>
+          <ul id="zeroList"></ul>
+        </div>
+        <div class="card">
+          <h2>Most vulnerable region</h2>
+          <button class="secondary" onclick="loadVulnerable()">Refresh</button>
+          <div id="vulnerableBox" class="muted">—</div>
+        </div>
+      </div>
+    </div>
+
+    <div id="toast" class="toast"></div>
+    <div id="popup" class="popup"><div class="box" id="popupText">Saved</div></div>
+  </div>
+</body>
+</html>
+

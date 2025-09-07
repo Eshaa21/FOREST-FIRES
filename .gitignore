@@ -1,0 +1,5 @@
+﻿target/
+forest.db
+*.log
+*.sqlite
+*.db-journal
